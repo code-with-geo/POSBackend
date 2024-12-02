@@ -13,25 +13,41 @@ namespace POS.Controllers
         private readonly AppDbContext _context;
         private readonly WebSocketConnectionManager _webSocketConnectionManager;
 
-        // Constructor injection for AppDbContext and WebSocketConnectionManager
         public ProductController(AppDbContext context, WebSocketConnectionManager webSocketConnectionManager)
         {
             _context = context ?? throw new ArgumentNullException(nameof(context));
             _webSocketConnectionManager = webSocketConnectionManager ?? throw new ArgumentNullException(nameof(webSocketConnectionManager));
         }
 
-        // GET: api/product
         [HttpGet]
         [Authorize]
         public IActionResult GetProducts()
         {
             if (_context == null)
-            {
                 return StatusCode(500, "Database context is null.");
-            }
 
-            var products = _context.Products.ToList();
+            var products = _context.Products
+                .Include(p => p.Categories) // Eager load related categories
+                .ToList();
+
             return Ok(products);
+        }
+
+        [HttpGet("{id}")]
+        [Authorize]
+        public IActionResult GetProductById(int id)
+        {
+            if (_context == null)
+                return StatusCode(500, "Database context is null.");
+
+            var product = _context.Products
+                .Include(p => p.Categories) // Eager load related categories
+                .FirstOrDefault(p => p.Id == id);
+
+            if (product == null)
+                return NotFound($"Product with ID {id} not found.");
+
+            return Ok(product);
         }
 
         [HttpPost]
@@ -39,32 +55,17 @@ namespace POS.Controllers
         public async Task<IActionResult> CreateProduct([FromBody] Products product)
         {
             if (product == null)
-            {
                 return BadRequest("Product data is required.");
-            }
-
-            if (_context == null)
-            {
-                return StatusCode(500, "Database context is null.");
-            }
 
             _context.Products.Add(product);
-            _context.SaveChanges();
+            await _context.SaveChangesAsync();
 
-            // Broadcast a message to all connected WebSocket clients about the new product
             var message = new
             {
                 type = "new-product",
-                content = new
-                {
-                    id = product.Id,
-                    name = product.Name,
-                    price = product.Price,
-                    units = product.Units
-                }
+                content = product
             };
 
-            // Wait for the broadcast to finish before returning the response
             await _webSocketConnectionManager.BroadcastJsonMessageAsync(message);
 
             return CreatedAtAction(nameof(GetProducts), new { id = product.Id }, product);
@@ -75,71 +76,52 @@ namespace POS.Controllers
         public async Task<IActionResult> UpdateProduct(int id, [FromBody] Products updatedProduct)
         {
             if (updatedProduct == null)
-            {
                 return BadRequest("Product data is required.");
-            }
 
-            var existingProduct = _context.Products.Find(id);
+            var existingProduct = await _context.Products.FindAsync(id);
             if (existingProduct == null)
-            {
                 return NotFound($"Product with ID {id} not found.");
-            }
 
-            // Update fields of the existing product
+            // Update fields
             existingProduct.Name = updatedProduct.Name;
+            existingProduct.Description = updatedProduct.Description;
             existingProduct.Price = updatedProduct.Price;
-            existingProduct.Units = updatedProduct.Units;
+            existingProduct.CategoryId = updatedProduct.CategoryId;
+            existingProduct.Status = updatedProduct.Status;
 
-            _context.Products.Update(existingProduct);
-            _context.SaveChanges();
+            await _context.SaveChangesAsync();
 
-            // Broadcast a message to all connected WebSocket clients about the updated product
             var message = new
             {
                 type = "update-product",
-                content = new
-                {
-                    id = existingProduct.Id,
-                    name = existingProduct.Name,
-                    price = existingProduct.Price,
-                    units = existingProduct.Units
-                }
+                content = existingProduct
             };
 
-            // Wait for the broadcast to finish before returning the response
             await _webSocketConnectionManager.BroadcastJsonMessageAsync(message);
 
-            return Ok(existingProduct);  // Return the updated product
+            return Ok(existingProduct);
         }
 
         [HttpDelete("{id}")]
         [Authorize]
         public async Task<IActionResult> DeleteProduct(int id)
         {
-            var product = _context.Products.Find(id);
+            var product = await _context.Products.FindAsync(id);
             if (product == null)
-            {
                 return NotFound($"Product with ID {id} not found.");
-            }
 
             _context.Products.Remove(product);
-            _context.SaveChanges();
+            await _context.SaveChangesAsync();
 
-            // Broadcast a message to all connected WebSocket clients about the deleted product
             var message = new
             {
                 type = "delete-product",
-                content = new
-                {
-                    id = product.Id,
-                    name = product.Name
-                }
+                content = new { id = product.Id, name = product.Name }
             };
 
-            // Wait for the broadcast to finish before returning the response
             await _webSocketConnectionManager.BroadcastJsonMessageAsync(message);
 
-            return NoContent();  // Return 204 No Content for successful deletion
+            return NoContent();
         }
     }
 }
